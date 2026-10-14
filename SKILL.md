@@ -18,6 +18,7 @@ Exit 3 = not logged in: ask the user to run `! mayo login --user <account>` (pas
 - Exit 2 "cannot punch X now": the web would not offer it either; tell the user what `status` says.
 - Exit 2 "outside the PostponeWork window": ask the user for a reason, then `--reason "..."`.
 - `--dry-run` prints the body without punching.
+- `mayo log [--since YYYY-MM-DD]` lists punches (default last 7 days) — use it to confirm a punch landed.
 
 ## Leave
 
@@ -26,4 +27,5 @@ Exit 3 = not logged in: ask the user to run `! mayo login --user <account>` (pas
 - `mayo leave apply <特休|事假|有薪病假|code> --date YYYY-MM-DD [--to ...] [--start HH:MM --end HH:MM] --reason ...`
   previews by default. Show the preview line to the user, and add `--yes` only after they confirm —
   it notifies the 代理人 and the approver.
-- Withdraw (unverified): `mayo raw PUT pt/api/LeaveRequestForms/Delete/<LeaveRequestFormId>`.
+- `mayo leave cancel <LeaveRequestFormId>` previews; `--yes` deletes a pending/returned form.
+  An approved form needs `--reason` and becomes a withdrawal request that goes to approval — confirm with the user first.

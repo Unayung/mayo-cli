@@ -56,6 +56,8 @@ API_MAP = {
         "GET  CheckInExtendWorkHourRule/GetWithReason": "today's WorkOnTime/WorkOffTime + Advance/Postpone window and reason types",
         "GET  EmployeeAttendanceSettings": "IsWebPunch, IsPositioning, ...",
         "GET  locations/EnableList": "punch locations",
+        "GET  checkinRecords/onOffWork|rest|outWork": "打卡紀錄: attendanceDateStart/End=YYYY/MM/DD, attendanceType, checkInWay, "
+                                                     "departmentId, employeeId, punchesLocationId (all may be empty)",
     },
     "leave (base /backend/pt/api/)": {
         "GET  IndividualLeaveTypes/Unused": "剩餘假別: [{LeaveCode, LeaveName, AvailableTime, UsedMinutes, Detail[{ExpiryDate, UnusedMinutes}]}] (minutes)",
@@ -67,7 +69,10 @@ API_MAP = {
                                               "LeaveRequestFormDetails[{LeaveCode, LeaveMinutes, Sort}], isBehalf:false, "
                                               "deputyFormTypes[{formTypeName, formType, checked}], isAgentSign}; files as file0..",
         "Sort": "index of the leave type in AvailableLeave Data + 2 (what the web form sends)",
-        "PUT  LeaveRequestForms/Delete/{id}": "withdraw a form (unverified; use `mayo raw`)",
+        "GET  LeaveRequestForms/{id}": "detail: Status, Approves[].ApproveDetail[].ApproveTime, CancelReason, ...",
+        "PUT  LeaveRequestForms/Delete/{id}": "刪除: Status 20 before the first approver acts, or Status 25 (退回)",
+        "PUT  LeaveRequestForms/Cancel": "撤銷 an approved form (Status 50): {LeaveRequestFormId, CancelReason}; goes to approval (Status 60)",
+        "Status": "20 簽核中, 25 退回, 50 已核准, 60 撤銷簽核中 (from the detail dialog's button switch)",
     },
     "fd (base /backend/fd/api/)": {
         "GET userInfo": "current employee",
@@ -418,6 +423,45 @@ def cmd_leave_apply(args, client):
     return emit(args, {"submitted": True, "form": form, "response": d}, f"submitted: {summary}")
 
 
+def cmd_leave_cancel(args, client):
+    d = client.call("GET", f"pt/api/LeaveRequestForms/{args.id}")
+    status = int(d.get("Status") or 0)
+    acted = any(a.get("ApproveTime") for ap in d.get("Approves") or [] for a in ap.get("ApproveDetail") or [])
+    what = (f"{d.get('LeaveRequestFormDetails', [{}])[0].get('LeaveName', '')} "
+            f"{local(d['StartDatetime']):%Y-%m-%d %H:%M} - {local(d['EndDatetime']):%Y-%m-%d %H:%M} ({d.get('StatusName')})")
+    # Mirrors the web detail dialog: which button it shows for this status.
+    if status == 25 or (status == 20 and not acted):
+        action, method, path, body = "delete", "PUT", f"pt/api/LeaveRequestForms/Delete/{args.id}", None
+    elif status == 50:
+        if not args.reason:
+            raise Fail("approved leave is withdrawn with a reason (撤銷原因), which then goes to approval: pass --reason", EX_USAGE)
+        action, method, path = "withdraw", "PUT", "pt/api/LeaveRequestForms/Cancel"
+        body = {"LeaveRequestFormId": args.id, "CancelReason": args.reason}
+    else:
+        raise Fail(f"the web offers no delete/withdraw for this form now: {what}", EX_USAGE, {"form": d})
+    if not args.yes:
+        emit(args, {"done": False, "action": action, "form": what}, f"preview: {action} {what}\nre-run with --yes")
+        return EX_OK
+    client.call(method, path, body=body)
+    after = client.call("GET", f"pt/api/LeaveRequestForms/{args.id}") if action == "withdraw" else None
+    return emit(args, {"done": True, "action": action, "form": what, "status": after and after.get("StatusName")},
+                f"{action}: {what}" + (f" -> {after.get('StatusName')}" if after else ""))
+
+
+def cmd_punch_log(args, client):
+    end = _dt.date.fromisoformat(args.to) if args.to else _dt.date.today()
+    start = _dt.date.fromisoformat(args.since) if args.since else end - _dt.timedelta(days=6)
+    tab = {"work": "onOffWork", "rest": "rest", "out": "outWork"}[args.kind]
+    q = urllib.parse.urlencode({"attendanceDateStart": f"{start:%Y/%m/%d}", "attendanceDateEnd": f"{end:%Y/%m/%d}",
+                                "attendanceType": "", "checkInWay": "", "departmentId": "", "employeeId": "",
+                                "punchesLocationId": "", "pageNumber": 1, "pageSize": 200})
+    rows = client.call("GET", f"pt/api/checkinRecords/{tab}?{q}")
+    # ponytail: no real punch seen yet to learn the column names; print every non-empty scalar.
+    return emit(args, rows, lambda: "\n".join(
+        "  ".join(f"{k}={v}" for k, v in r.items() if v not in (None, "", []) and not isinstance(v, (dict, list)))
+        for r in rows) or f"(no punches {start} - {end})")
+
+
 def cmd_api_map(args, client):
     return emit(args, API_MAP)
 
@@ -460,6 +504,10 @@ def build_parser():
     sp.add_argument("--reason", help="personal reason, required for early in / late out outside the allowed window")
     sp.add_argument("--dry-run", action="store_true", help="print the request body, do not punch")
     sp.set_defaults(fn=cmd_punch)
+    sp = sub.add_parser("log", parents=[common], help="打卡紀錄 (default: last 7 days)")
+    sp.add_argument("--since", help="YYYY-MM-DD"); sp.add_argument("--to", help="YYYY-MM-DD")
+    sp.add_argument("--kind", choices=["work", "rest", "out"], default="work", help="上下班 / 休息 / 外出")
+    sp.set_defaults(fn=cmd_punch_log)
 
     lp = sub.add_parser("leave", parents=[common], help="查假 / 請假").add_subparsers(dest="leave_cmd", required=True)
     lp.add_parser("balance", parents=[common], help="剩餘假別").set_defaults(fn=cmd_leave_balance)
@@ -477,6 +525,12 @@ def build_parser():
     sp.add_argument("--agent", help="agent EmployeeId (default: your configured 代理人)")
     sp.add_argument("--yes", action="store_true", help="actually submit")
     sp.set_defaults(fn=cmd_leave_apply)
+
+    sp = lp.add_parser("cancel", parents=[common], help="刪除 a pending form / 撤銷 an approved one (preview unless --yes)")
+    sp.add_argument("id", help="LeaveRequestFormId from `mayo leave list`")
+    sp.add_argument("--reason", help="撤銷原因, required for approved leave")
+    sp.add_argument("--yes", action="store_true")
+    sp.set_defaults(fn=cmd_leave_cancel)
 
     sub.add_parser("api-map", parents=[common], help="print the reverse-engineered endpoint map").set_defaults(fn=cmd_api_map)
     sp = sub.add_parser("raw", parents=[common], help="call any backend path, e.g. `mayo raw GET pt/api/GlobalConfigs`")
