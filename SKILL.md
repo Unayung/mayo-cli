@@ -19,6 +19,7 @@ Exit 3 = not logged in: ask the user to run `! mayo login --user <account>` (pas
 - Exit 2 "outside the PostponeWork window": ask the user for a reason, then `--reason "..."`.
 - `--dry-run` prints the body without punching.
 - `mayo log [--since YYYY-MM-DD]` lists punches (default last 7 days) — use it to confirm a punch landed.
+- After `punch in`, `status` shows the shift moved to start at the punch time (flexible hours), and the server refuses another punch within 10 minutes.
 
 ## Leave
 

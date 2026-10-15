@@ -448,6 +448,17 @@ def cmd_leave_cancel(args, client):
                 f"{action}: {what}" + (f" -> {after.get('StatusName')}" if after else ""))
 
 
+def log_line(r):
+    """One day of punches: date, in, out, where."""
+    # ponytail: In*/Out* fields seen on the work tab only; rest/out tabs assumed alike, else dump every scalar.
+    if "InAttendanceOn" not in r:
+        return "  ".join(f"{k}={v}" for k, v in r.items() if v not in (None, "", []) and not isinstance(v, (dict, list)))
+    where = dict.fromkeys(f"{r.get(f'Language_{s}PunchesLocation') or ''} {r.get(f'{s}OriginType') or ''}".strip()
+                          for s in ("In", "Out") if r.get(f"{s}AttendanceOn"))
+    return f"{(r.get('AttendanceDate') or '')[:10]}  {hhmm(r['InAttendanceOn'])} - {hhmm(r.get('OutAttendanceOn'))}  " \
+           + " / ".join(w for w in where if w)
+
+
 def cmd_punch_log(args, client):
     end = _dt.date.fromisoformat(args.to) if args.to else _dt.date.today()
     start = _dt.date.fromisoformat(args.since) if args.since else end - _dt.timedelta(days=6)
@@ -456,10 +467,7 @@ def cmd_punch_log(args, client):
                                 "attendanceType": "", "checkInWay": "", "departmentId": "", "employeeId": "",
                                 "punchesLocationId": "", "pageNumber": 1, "pageSize": 200})
     rows = client.call("GET", f"pt/api/checkinRecords/{tab}?{q}")
-    # ponytail: no real punch seen yet to learn the column names; print every non-empty scalar.
-    return emit(args, rows, lambda: "\n".join(
-        "  ".join(f"{k}={v}" for k, v in r.items() if v not in (None, "", []) and not isinstance(v, (dict, list)))
-        for r in rows) or f"(no punches {start} - {end})")
+    return emit(args, rows, lambda: "\n".join(map(log_line, rows)) or f"(no punches {start} - {end})")
 
 
 def cmd_api_map(args, client):
